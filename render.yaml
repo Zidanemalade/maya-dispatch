@@ -1,18 +1,1 @@
-services:
-  - type: web
-    name: maya-dispatch
-    env: node
-    plan: starter
-    buildCommand: npm install
-    startCommand: node server.js
-    disk:
-      name: maya-data
-      mountPath: /data
-      sizeGB: 1
-    envVars:
-      - key: DB_PATH
-        value: /data/maya.db
-      - key: NODE_ENV
-        value: production
-      - key: SESSION_SECRET
-        generateValue: true
+ services: - type: web name: maya-dispatch env: node plan: free buildCommand: npm install startCommand: node server.js envVars: - key: NODE_ENV value: production - key: SESSION_SECRET generateValue: true
