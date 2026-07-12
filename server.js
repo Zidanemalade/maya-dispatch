@@ -5,7 +5,8 @@ const crypto = require('crypto');
 const path = require('path');
 const db = require('./db');
 
-const app = express();
+const app = express(); 
+app.set('trust proxy', 1);
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
