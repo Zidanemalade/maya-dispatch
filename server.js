@@ -5,8 +5,8 @@ const crypto = require('crypto');
 const path = require('path');
 const db = require('./db');
 
-const app = express(); 
-app.set('trust proxy', 1);
+const app = express();
+app.set('trust proxy', 1); // nécessaire derrière un proxy (Render, etc.) pour que les cookies sécurisés fonctionnent
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
@@ -24,19 +24,24 @@ app.use(session({
 function uid() { return crypto.randomUUID(); }
 
 // ================= Règles métier : jour / semaine / mois =================
+// Tous les calculs ci-dessous sont volontairement indépendants du fuseau horaire
+// de la machine qui exécute le code (serveur ou navigateur) : le Bénin est en
+// UTC+1 toute l'année (pas de changement d'heure), donc on fixe cet écart en dur
+// plutôt que de dépendre du réglage de l'appareil.
+const BENIN_OFFSET_MIN = 60;
 
-// La journée métier commence à 8h — avant 8h, on est encore dans la journée précédente
-function businessDateISO(d = new Date()) {
-  const copy = new Date(d);
-  if (copy.getHours() < 8) copy.setDate(copy.getDate() - 1);
-  return copy.toISOString().slice(0, 10);
+// La journée métier commence à 8h (heure du Bénin) — avant 8h, on est encore dans la journée précédente
+function businessDateISO(refDate = new Date()) {
+  const benin = new Date(refDate.getTime() + BENIN_OFFSET_MIN * 60000);
+  if (benin.getUTCHours() < 8) benin.setUTCDate(benin.getUTCDate() - 1);
+  return benin.toISOString().slice(0, 10);
 }
 function todayISO() { return businessDateISO(new Date()); }
 
 function semaineKey(dateISO) {
-  const d = new Date(dateISO + 'T00:00:00');
-  const dow = (d.getDay() + 6) % 7; // 0=lundi
-  const monday = new Date(d); monday.setDate(d.getDate() - dow);
+  const d = new Date(dateISO + 'T00:00:00Z');
+  const dow = (d.getUTCDay() + 6) % 7; // 0=lundi
+  const monday = new Date(d.getTime()); monday.setUTCDate(d.getUTCDate() - dow);
   return monday.toISOString().slice(0, 10);
 }
 function isSamePeriod(dateISO, period) {
@@ -46,13 +51,13 @@ function isSamePeriod(dateISO, period) {
   return true;
 }
 function moisRange(dateISO) {
-  const d = new Date(dateISO + 'T00:00:00');
-  const day = d.getDate();
+  const d = new Date(dateISO + 'T00:00:00Z');
+  const day = d.getUTCDate();
   let debut, fin;
-  if (day >= 5) { debut = new Date(d.getFullYear(), d.getMonth(), 5); fin = new Date(d.getFullYear(), d.getMonth() + 1, 5); }
-  else { debut = new Date(d.getFullYear(), d.getMonth() - 1, 5); fin = new Date(d.getFullYear(), d.getMonth(), 5); }
+  if (day >= 5) { debut = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 5)); fin = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 5)); }
+  else { debut = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() - 1, 5)); fin = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 5)); }
   const key = debut.toISOString().slice(0, 10);
-  const label = debut.toLocaleDateString('fr-FR', { day: '2-digit', month: 'short' }) + ' → ' + fin.toLocaleDateString('fr-FR', { day: '2-digit', month: 'short', year: 'numeric' });
+  const label = debut.toLocaleDateString('fr-FR', { day: '2-digit', month: 'short', timeZone: 'UTC' }) + ' → ' + fin.toLocaleDateString('fr-FR', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'UTC' });
   return { debut, fin, key, label };
 }
 function currentMoisKey() { return moisRange(todayISO()).key; }
@@ -214,6 +219,20 @@ app.post('/api/livraisons/:id/cancel', requireAuth, (req, res) => {
   const { motif } = req.body;
   db.prepare('UPDATE livraisons SET statut = ?, motif_annulation = ? WHERE id = ?').run('annulee', motif, c.id);
   log(req.session.user.nom || 'Boss', c.agence_id, 'Livraison annulée', `${c.expediteur} · motif: ${motif}`);
+  res.json({ ok: true });
+});
+
+app.post('/api/livraisons/:id/edit', requireAuth, (req, res) => {
+  const c = db.prepare('SELECT * FROM livraisons WHERE id = ?').get(req.params.id);
+  if (!c) return res.status(404).json({ error: 'Introuvable' });
+  if (!agenceAutorisee(req, c.agence_id)) return res.status(403).json({ error: 'Non autorisé' });
+  if (c.statut === 'livree' || c.statut === 'annulee') {
+    return res.status(400).json({ error: 'Impossible de modifier une livraison déjà livrée ou annulée.' });
+  }
+  const { expediteur, contactExp, destinataire, contactDest, natureColis, lieu, heure, montant, livreurId } = req.body;
+  db.prepare(`UPDATE livraisons SET expediteur=?, contact_exp=?, destinataire=?, contact_dest=?, nature_colis=?, lieu=?, heure=?, montant=?, livreur_id=? WHERE id=?`)
+    .run(expediteur, contactExp, destinataire, contactDest, natureColis, lieu, heure, Number(montant) || 0, livreurId, c.id);
+  log(req.session.user.nom || 'Boss', c.agence_id, 'Livraison modifiée', `${expediteur} → ${destinataire} (${montant} F)`);
   res.json({ ok: true });
 });
 

@@ -8,6 +8,7 @@
   let archiveSubTab = 'jours';
   let expandedWeekKey = null;
   let expandedDayKey = null;
+  let editingLivraisonId = null;
   let data = null;
   let loaded = false;
   let pollTimer = null;
@@ -46,12 +47,12 @@
     render();
   }
 
-  // ---- period helpers (mirror server logic for display filtering client-side is unnecessary:
-  // the server already scopes by agence; period filtering for tabs uses data.todayISO / currentMoisKey from server) ----
+  // ---- period helpers : calculs volontairement indépendants du fuseau horaire
+  // du navigateur (le Bénin est en UTC+1 toute l'année, sans changement d'heure) ----
   function semaineKeyLocal(dateISO){
-    const d = new Date(dateISO+'T00:00:00');
-    const dow = (d.getDay()+6)%7;
-    const monday = new Date(d); monday.setDate(d.getDate()-dow);
+    const d = new Date(dateISO+'T00:00:00Z');
+    const dow = (d.getUTCDay()+6)%7;
+    const monday = new Date(d.getTime()); monday.setUTCDate(d.getUTCDate()-dow);
     return monday.toISOString().slice(0,10);
   }
   function isSamePeriod(dateISO, p){
@@ -62,19 +63,19 @@
     return true;
   }
   function moisRangeLocal(dateISO){
-    const d = new Date(dateISO+'T00:00:00');
-    const day = d.getDate();
+    const d = new Date(dateISO+'T00:00:00Z');
+    const day = d.getUTCDate();
     let debut, fin;
-    if (day >= 5) { debut = new Date(d.getFullYear(), d.getMonth(), 5); fin = new Date(d.getFullYear(), d.getMonth()+1, 5); }
-    else { debut = new Date(d.getFullYear(), d.getMonth()-1, 5); fin = new Date(d.getFullYear(), d.getMonth(), 5); }
+    if (day >= 5) { debut = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 5)); fin = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth()+1, 5)); }
+    else { debut = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth()-1, 5)); fin = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 5)); }
     const key = debut.toISOString().slice(0,10);
-    const label = debut.toLocaleDateString('fr-FR',{day:'2-digit',month:'short'}) + ' → ' + fin.toLocaleDateString('fr-FR',{day:'2-digit',month:'short',year:'numeric'});
+    const label = debut.toLocaleDateString('fr-FR',{day:'2-digit',month:'short',timeZone:'UTC'}) + ' → ' + fin.toLocaleDateString('fr-FR',{day:'2-digit',month:'short',year:'numeric',timeZone:'UTC'});
     return { debut, fin, key, label };
   }
   function weekRangeLocal(dateISO){
-    const monday = new Date(semaineKeyLocal(dateISO)+'T00:00:00');
-    const saturday = new Date(monday); saturday.setDate(monday.getDate()+5);
-    const label = 'Semaine du ' + monday.toLocaleDateString('fr-FR',{day:'2-digit',month:'short'}) + ' au ' + saturday.toLocaleDateString('fr-FR',{day:'2-digit',month:'short',year:'numeric'});
+    const monday = new Date(semaineKeyLocal(dateISO)+'T00:00:00Z');
+    const saturday = new Date(monday.getTime()); saturday.setUTCDate(monday.getUTCDate()+5);
+    const label = 'Semaine du ' + monday.toLocaleDateString('fr-FR',{day:'2-digit',month:'short',timeZone:'UTC'}) + ' au ' + saturday.toLocaleDateString('fr-FR',{day:'2-digit',month:'short',year:'numeric',timeZone:'UTC'});
     return { debut:monday, fin:saturday, key:semaineKeyLocal(dateISO), label };
   }
   function tauxAt(livreur, dateISO){
@@ -127,7 +128,7 @@
   // ================= Rendering =================
   function render(){
     if (!loaded && user) { root.innerHTML = 'Chargement…'; return; }
-    if (!user) { renderLogin(); return; }
+    if (!user) { stopPoll(); renderLogin(); return; }
     const isBoss = user.type === 'boss';
     const tabs = isBoss
       ? [['dashboard','Tableau de bord'],['stats','Par livreur'],['livraisons','Livraisons'],['depenses','Dépenses'],['essence','Essence'],['livreurs','Livreurs'],['comptes','Comptes'],['archives','Archives'],['audit','Journal']]
@@ -273,8 +274,42 @@
 
   function renderLivraisonsTable(list, isBoss){
     if (list.length===0) return '<div class="d3-panel"><div class="d3-empty">Aucune livraison enregistrée.</div></div>';
+    const editForm = (() => {
+      if (!editingLivraisonId) return '';
+      const c = list.find(x=>x.id===editingLivraisonId) || data.livraisons.find(x=>x.id===editingLivraisonId);
+      if (!c) return '';
+      return `
+        <div class="d3-panel" style="border:1px solid var(--amber);">
+          <h3>Modifier la livraison</h3>
+          <form id="form-edit-livraison" data-id="${c.id}">
+            <div class="d3-row2">
+              <div class="d3-field"><label>Expéditeur</label><input required name="expediteur" value="${esc(c.expediteur)}"></div>
+              <div class="d3-field"><label>Contact expéditeur</label><input required name="contactExp" value="${esc(c.contactExp||'')}"></div>
+            </div>
+            <div class="d3-row2">
+              <div class="d3-field"><label>Destinataire</label><input required name="destinataire" value="${esc(c.destinataire)}"></div>
+              <div class="d3-field"><label>Contact destinataire</label><input required name="contactDest" value="${esc(c.contactDest||'')}"></div>
+            </div>
+            <div class="d3-field"><label>Nature du colis</label><input required name="natureColis" value="${esc(c.natureColis||'')}"></div>
+            <div class="d3-row2">
+              <div class="d3-field"><label>Lieu de livraison</label><input required name="lieu" value="${esc(c.lieu||'')}"></div>
+              <div class="d3-field"><label>Heure de la commande</label><input required type="time" name="heure" value="${esc(c.heure||'')}"></div>
+            </div>
+            <div class="d3-row2">
+              <div class="d3-field"><label>Montant (F)</label><input required type="number" min="0" name="montant" value="${c.montant}"></div>
+              <div class="d3-field"><label>Livreur</label><select required name="livreurId">${livreurOptions(c.agenceId).replace(`value="${c.livreurId}"`, `value="${c.livreurId}" selected`)}</select></div>
+            </div>
+            <div class="d3-inline-form">
+              <button class="d3-btn" type="submit">Enregistrer les modifications</button>
+              <button class="d3-btn d3-btn-ghost" type="button" id="btn-cancel-edit">Annuler</button>
+            </div>
+          </form>
+        </div>
+      `;
+    })();
     const rows = list.map(c=>{
       const l = livreurById(c.livreurId)||{nom:'—'};
+      const editable = c.statut!=='livree' && c.statut!=='annulee';
       return `
         <tr>
           <td class="d3-mono">${c.date}${isBoss?' · '+esc(agenceNom(c.agenceId)):''}</td>
@@ -285,12 +320,14 @@
           <td>${esc(l.nom)}</td>
           <td class="d3-mono">${fmt(c.montant)} F</td>
           <td><span class="d3-badge ${c.statut}">${({attente:'En attente',cours:'En cours',livree:'Livrée',annulee:'Annulée'})[c.statut]}</span>${c.statut==='annulee'?`<div class="d3-hist">Motif: ${esc(c.motifAnnulation||'—')}</div>`:''}</td>
-          <td>${c.statut!=='livree' && c.statut!=='annulee' ? `<button class="d3-btn d3-btn-ghost d3-btn-small" data-action="advance" data-id="${c.id}">→ suite</button>` : ''}
+          <td>${editable ? `<button class="d3-btn d3-btn-ghost d3-btn-small" data-action="advance" data-id="${c.id}">→ suite</button>` : ''}
+              ${editable ? `<button class="d3-btn d3-btn-ghost d3-btn-small" data-action="edit-liv" data-id="${c.id}">Modifier</button>` : ''}
               ${c.statut!=='annulee' ? `<button class="d3-btn d3-btn-ghost d3-btn-small" data-action="annuler-liv" data-id="${c.id}">Annuler</button>` : ''}</td>
         </tr>
       `;
     }).join('');
     return `
+      ${editForm}
       <div class="d3-panel">
         <h3>${isBoss?'Toutes les livraisons':'Mes livraisons'}</h3>
         <table class="d3-table">
@@ -494,7 +531,7 @@
       const depensesP = data.depenses.filter(d=>scope.includes(d.agenceId) && d.date===k).reduce((s,d)=>s+d.montant,0);
       const essenceP = data.essence.filter(e=>scope.includes(e.agenceId) && e.date===k).reduce((s,e)=>s+e.coutTotal,0);
       const expanded = expandedDayKey === k;
-      const label = new Date(k+'T00:00:00').toLocaleDateString('fr-FR',{weekday:'long', day:'2-digit', month:'long', year:'numeric'});
+      const label = new Date(k+'T00:00:00Z').toLocaleDateString('fr-FR',{weekday:'long', day:'2-digit', month:'long', year:'numeric', timeZone:'UTC'});
       return `
         <div class="d3-panel">
           <h3>${label}</h3>
@@ -707,6 +744,20 @@
     root.querySelectorAll('[data-action="update-taux"]').forEach(b=>b.addEventListener('click', async ()=>{ const i=document.getElementById('taux-'+b.dataset.id); if(i.value!=='') { try { await api('/api/livreurs/'+b.dataset.id+'/taux', {method:'POST', body: JSON.stringify({taux:i.value})}); await loadState(); } catch(err){ alert(err.message); } } }));
     root.querySelectorAll('[data-action="update-salaire"]').forEach(b=>b.addEventListener('click', async ()=>{ const i=document.getElementById('salaire-'+b.dataset.id); if(i.value!=='') { try { await api('/api/livreurs/'+b.dataset.id+'/salaire', {method:'POST', body: JSON.stringify({salaire:i.value})}); await loadState(); } catch(err){ alert(err.message); } } }));
     root.querySelectorAll('[data-action="advance"]').forEach(b=>b.addEventListener('click', async ()=>{ try { await api('/api/livraisons/'+b.dataset.id+'/advance', {method:'POST', body:'{}'}); await loadState(); } catch(err){ alert(err.message); } }));
+    root.querySelectorAll('[data-action="edit-liv"]').forEach(b=>b.addEventListener('click', ()=>{ editingLivraisonId = b.dataset.id; render(); }));
+    const btnCancelEdit = document.getElementById('btn-cancel-edit');
+    if (btnCancelEdit) btnCancelEdit.addEventListener('click', ()=>{ editingLivraisonId = null; render(); });
+    const formEditLiv = document.getElementById('form-edit-livraison');
+    if (formEditLiv) formEditLiv.addEventListener('submit', async e=>{
+      e.preventDefault(); const fd = new FormData(formEditLiv);
+      try {
+        await api('/api/livraisons/'+formEditLiv.dataset.id+'/edit', { method:'POST', body: JSON.stringify({
+          expediteur:fd.get('expediteur'), contactExp:fd.get('contactExp'), destinataire:fd.get('destinataire'), contactDest:fd.get('contactDest'),
+          natureColis:fd.get('natureColis'), lieu:fd.get('lieu'), heure:fd.get('heure'), montant:Number(fd.get('montant'))||0, livreurId:fd.get('livreurId')
+        })});
+        editingLivraisonId = null; await loadState();
+      } catch(err){ alert(err.message); }
+    });
     root.querySelectorAll('[data-action="annuler-liv"]').forEach(b=>b.addEventListener('click', async ()=>{ const motif=prompt('Motif de l’annulation :'); if (motif) { try { await api('/api/livraisons/'+b.dataset.id+'/cancel', {method:'POST', body: JSON.stringify({motif})}); await loadState(); } catch(err){ alert(err.message); } } }));
 
     root.querySelectorAll('[data-action="unlock"]').forEach(b=>b.addEventListener('click', async ()=>{ try { await api('/api/comptes/'+b.dataset.id+'/unlock', {method:'POST', body:'{}'}); await loadState(); } catch(err){ alert(err.message); } }));
