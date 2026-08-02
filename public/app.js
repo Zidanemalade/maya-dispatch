@@ -698,7 +698,8 @@
   function clientDepotById(id){ return data.clientsDepot.find(c=>c.id===id); }
 
   function ventesDepotTotals(list){
-    const agg = p => { const f = list.filter(v=>isSamePeriod(v.date,p)); return { nb:f.length, net:f.reduce((s,v)=>s+v.net,0) }; };
+    const valid = list.filter(v=>v.statut!=='annulee');
+    const agg = p => { const f = valid.filter(v=>isSamePeriod(v.date,p)); return { nb:f.length, net:f.reduce((s,v)=>s+v.net,0) }; };
     return { jour:agg('jour'), semaine:agg('semaine'), mois:agg('mois') };
   }
 
@@ -720,16 +721,20 @@
         </tr>
       `).join('');
       return `
-        <div class="d3-panel">
+        <div class="d3-panel" style="${c.actif===false?'opacity:0.7;':''}">
           <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
-            <div><strong>${esc(c.nom)}</strong>${c.contact?` <span class="d3-hist">(${esc(c.contact)})</span>`:''}</div>
-            <button class="d3-btn d3-btn-ghost d3-btn-small" data-action="filtre-client-depot" data-id="${c.id}">${depotClientFiltre===c.id?'Voir tous les clients':'Filtrer sur ce client'}</button>
+            <div><strong>${esc(c.nom)}</strong>${c.contact?` <span class="d3-hist">(${esc(c.contact)})</span>`:''} <span class="d3-badge ${c.actif===false?'locked':'active-acc'}" style="margin-left:6px;">${c.actif===false?'Inactif':'Actif'}</span></div>
+            <div class="d3-inline-form">
+              <button class="d3-btn d3-btn-ghost d3-btn-small" data-action="filtre-client-depot" data-id="${c.id}">${depotClientFiltre===c.id?'Voir tous les clients':'Filtrer sur ce client'}</button>
+              ${isBoss ? `<button class="d3-btn d3-btn-ghost d3-btn-small" data-action="toggle-actif-client" data-id="${c.id}">${c.actif===false?'Réactiver':'Désactiver'}</button>` : ''}
+            </div>
           </div>
           ${produits.length ? `
           <table class="d3-table" style="margin-top:10px;">
             <thead><tr><th>Produit</th><th>Réf.</th><th>Catégorie</th><th>Emplacement</th><th>Stock</th><th>Prix normal</th><th>Réappro.</th></tr></thead>
             <tbody>${rows}</tbody>
           </table>` : '<p class="d3-empty" style="margin-top:10px;">Aucun produit en stock pour ce client (dans cette vue).</p>'}
+          ${c.actif===false ? `<p class="d3-note">Client désactivé — plus disponible pour de nouvelles sorties de stock. Réactive-le pour reprendre.</p>` : `
           <details style="margin-top:12px;">
             <summary style="cursor:pointer; color:var(--amber); font-size:13px;">+ Ajouter un produit pour ${esc(c.nom)}</summary>
             <form class="form-add-produit" data-client="${c.id}" style="margin-top:10px;">
@@ -748,7 +753,7 @@
               </div>
               <button class="d3-btn d3-btn-small" type="submit">Ajouter le produit</button>
             </form>
-          </details>
+          </details>`}
         </div>
       `;
     }).join('');
@@ -770,8 +775,8 @@
 
   function renderDepotSortie(){
     const ag = user.agenceId;
-    const produitsDispo = data.produitsDepot.filter(p=>p.agenceId===ag);
-    if (produitsDispo.length===0) return '<div class="d3-panel"><div class="d3-empty">Aucun produit en stock pour cette agence — ajoute d’abord un client et un produit dans l’onglet « Dépôt : Stock ».</div></div>';
+    const produitsDispo = data.produitsDepot.filter(p=>p.agenceId===ag && (clientDepotById(p.clientId)||{}).actif !== false);
+    if (produitsDispo.length===0) return '<div class="d3-panel"><div class="d3-empty">Aucun produit en stock disponible pour cette agence — ajoute d’abord un client actif et un produit dans l’onglet « Dépôt : Stock ».</div></div>';
     const options = produitsDispo.map(p=>{
       const c = clientDepotById(p.clientId);
       return `<option value="${p.id}" data-prix="${p.prixNormal}" data-stock="${p.quantite}">${esc((c||{}).nom||'—')} — ${esc(p.nom)} (stock: ${p.quantite})</option>`;
@@ -820,12 +825,15 @@
         <td class="d3-mono">${fmt(v.fraisLivraison)} F</td>
         <td class="d3-mono">${fmt(v.net)} F</td>
         <td>${esc(l.nom||'—')}</td>
+        <td><span class="d3-badge ${v.statut==='annulee'?'annulee':'validee'}">${v.statut==='annulee'?'Annulée':'Validée'}</span>${v.statut==='annulee'?`<div class="d3-hist">Motif: ${esc(v.motifAnnulation||'—')}</div>`:''}</td>
+        <td>${v.statut!=='annulee' ? `<button class="d3-btn d3-btn-ghost d3-btn-small" data-action="annuler-vente-depot" data-id="${v.id}">Annuler</button>` : ''}</td>
       </tr>`;
     }).join('');
     return totalsBlock(totals, p=>`<p class="d3-kpi-value">${p.nb}</p><p class="d3-hist">${fmt(p.net)} F net</p>`) + `
       <div class="d3-panel">
         <h3>${isBoss?'Toutes les sorties (dépôt)':'Mes sorties (dépôt)'}</h3>
-        ${list.length ? `<table class="d3-table"><thead><tr><th>Date</th><th>Client</th><th>Produit</th><th>Qté</th><th>Prix vendu</th><th>Frais</th><th>Net</th><th>Livreur</th></tr></thead><tbody>${rows}</tbody></table>` : '<div class="d3-empty">Aucune sortie enregistrée.</div>'}
+        ${list.length ? `<table class="d3-table"><thead><tr><th>Date</th><th>Client</th><th>Produit</th><th>Qté</th><th>Prix vendu</th><th>Frais</th><th>Net</th><th>Livreur</th><th>Statut</th><th></th></tr></thead><tbody>${rows}</tbody></table>` : '<div class="d3-empty">Aucune sortie enregistrée.</div>'}
+        <p class="d3-note">Annuler une sortie restitue automatiquement la quantité au stock du produit.</p>
       </div>
     `;
   }
@@ -835,7 +843,7 @@
     if (clients.length===0) return '<div class="d3-panel"><div class="d3-empty">Aucun client dépositaire enregistré.</div></div>';
     const selectedId = depotFactureClientId || clients[0].id;
     const periodeLabel = depotFacturePeriode==='jour' ? "Aujourd'hui" : "Ce mois";
-    const list = data.ventesDepot.filter(v=>v.clientId===selectedId && isSamePeriod(v.date, depotFacturePeriode));
+    const list = data.ventesDepot.filter(v=>v.clientId===selectedId && v.statut!=='annulee' && isSamePeriod(v.date, depotFacturePeriode));
     const totalVendu = list.reduce((s,v)=>s+v.prixVendu,0);
     const totalFrais = list.reduce((s,v)=>s+v.fraisLivraison,0);
     const totalNet = list.reduce((s,v)=>s+v.net,0);
@@ -1015,6 +1023,16 @@
     root.querySelectorAll('[data-action="filtre-client-depot"]').forEach(b=>b.addEventListener('click', ()=>{
       depotClientFiltre = (depotClientFiltre===b.dataset.id) ? null : b.dataset.id; render();
     }));
+    root.querySelectorAll('[data-action="toggle-actif-client"]').forEach(b=>b.addEventListener('click', async ()=>{
+      try { await api('/api/depot/clients/'+b.dataset.id+'/toggle-actif', { method:'POST', body:'{}' }); await loadState(); }
+      catch(err){ alert(err.message); }
+    }));
+    root.querySelectorAll('[data-action="annuler-vente-depot"]').forEach(b=>b.addEventListener('click', async ()=>{
+      const motif = prompt('Motif de l’annulation :');
+      if (!motif) return;
+      try { await api('/api/depot/ventes/'+b.dataset.id+'/cancel', { method:'POST', body: JSON.stringify({ motif }) }); await loadState(); }
+      catch(err){ alert(err.message); }
+    }));
 
     // ---- Dépôt : nouvelle sortie ----
     const selProduit = document.getElementById('depot-vente-produit');
@@ -1054,7 +1072,7 @@
       const clientNom = (clientDepotById(depotFactureClientId || (data.clientsDepot[0]||{}).id)||{}).nom || '';
       const periodeLabel = depotFacturePeriode==='jour' ? "Aujourd'hui" : "Ce mois";
       const selectedId = depotFactureClientId || (data.clientsDepot[0]||{}).id;
-      const list = data.ventesDepot.filter(v=>v.clientId===selectedId && isSamePeriod(v.date, depotFacturePeriode));
+      const list = data.ventesDepot.filter(v=>v.clientId===selectedId && v.statut!=='annulee' && isSamePeriod(v.date, depotFacturePeriode));
       const totalVendu = list.reduce((s,v)=>s+v.prixVendu,0);
       const totalFrais = list.reduce((s,v)=>s+v.fraisLivraison,0);
       const totalNet = list.reduce((s,v)=>s+v.net,0);

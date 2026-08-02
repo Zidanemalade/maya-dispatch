@@ -130,8 +130,11 @@ async function init() {
     );
   `);
 
-  // Migration douce : ajoute la colonne livreur_id si elle n'existe pas encore (déploiements déjà en place)
+  // Migration douce : ajoute les colonnes si elles n'existent pas encore (déploiements déjà en place)
   await pool.query('ALTER TABLE ventes_depot ADD COLUMN IF NOT EXISTS livreur_id TEXT');
+  await pool.query('ALTER TABLE ventes_depot ADD COLUMN IF NOT EXISTS statut TEXT NOT NULL DEFAULT \'validee\'');
+  await pool.query('ALTER TABLE ventes_depot ADD COLUMN IF NOT EXISTS motif_annulation TEXT');
+  await pool.query('ALTER TABLE clients_depot ADD COLUMN IF NOT EXISTS actif BOOLEAN NOT NULL DEFAULT TRUE');
 
   const { rows } = await pool.query('SELECT COUNT(*)::int AS c FROM agences');
   if (rows[0].c === 0) {

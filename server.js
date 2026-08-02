@@ -185,7 +185,7 @@ app.get('/api/state', requireAuth, ah(async (req, res) => {
   }
 
   const clientsDepot = (await pool.query('SELECT * FROM clients_depot ORDER BY nom ASC')).rows
-    .map(c => ({ id: c.id, nom: c.nom, contact: c.contact }));
+    .map(c => ({ id: c.id, nom: c.nom, contact: c.contact, actif: c.actif }));
 
   const produitsDepotRaw = (await pool.query('SELECT * FROM produits_depot WHERE agence_id = ANY($1)', [scope])).rows;
   const produitsDepot = produitsDepotRaw.map(p => ({
@@ -197,7 +197,8 @@ app.get('/api/state', requireAuth, ah(async (req, res) => {
   const ventesDepot = ventesDepotRaw.map(v => ({
     id: v.id, produitId: v.produit_id, clientId: v.client_id, agenceId: v.agence_id, quantite: v.quantite,
     prixVendu: v.prix_vendu, fraisLivraison: v.frais_livraison, net: v.net, destinataire: v.destinataire,
-    contactDest: v.contact_dest, lieu: v.lieu, heure: v.heure, date: v.date, secretaireId: v.secretaire_id, createdAt: Number(v.created_at), livreurId: v.livreur_id
+    contactDest: v.contact_dest, lieu: v.lieu, heure: v.heure, date: v.date, secretaireId: v.secretaire_id, createdAt: Number(v.created_at),
+    livreurId: v.livreur_id, statut: v.statut, motifAnnulation: v.motif_annulation
   }));
 
   res.json({ agences, secretaires, livreurs, livraisons, depenses, essence, prixEssence, audit, clientsDepot, produitsDepot, ventesDepot, todayISO: todayISO(), currentMoisKey: currentMoisKey() });
@@ -374,6 +375,16 @@ app.post('/api/depot/clients', requireAuth, ah(async (req, res) => {
   res.json({ ok: true, id });
 }));
 
+app.post('/api/depot/clients/:id/toggle-actif', requireBoss, ah(async (req, res) => {
+  const { rows } = await pool.query('SELECT * FROM clients_depot WHERE id = $1', [req.params.id]);
+  const c = rows[0];
+  if (!c) return res.status(404).json({ error: 'Introuvable' });
+  const nouveauStatut = !c.actif;
+  await pool.query('UPDATE clients_depot SET actif = $1 WHERE id = $2', [nouveauStatut, c.id]);
+  await log('Boss', null, nouveauStatut ? 'Client dépôt réactivé' : 'Client dépôt désactivé', c.nom);
+  res.json({ ok: true, actif: nouveauStatut });
+}));
+
 app.post('/api/depot/produits', requireAuth, ah(async (req, res) => {
   const user = req.session.user;
   const { clientId, agenceId, nom, reference, categorie, emplacement, quantite, prixNormal } = req.body;
@@ -424,6 +435,23 @@ app.post('/api/depot/ventes', requireAuth, ah(async (req, res) => {
 
   await log(user.type === 'boss' ? 'Boss' : user.nom, p.agence_id, 'Sortie de stock (dépôt)', `${p.nom} x${qte} — ${prix} F` + (nouvelleQuantite < 0 ? ' ⚠ stock négatif' : ''));
   res.json({ ok: true, id, stockRestant: nouvelleQuantite });
+}));
+
+app.post('/api/depot/ventes/:id/cancel', requireAuth, ah(async (req, res) => {
+  const { rows } = await pool.query('SELECT * FROM ventes_depot WHERE id = $1', [req.params.id]);
+  const v = rows[0];
+  if (!v) return res.status(404).json({ error: 'Introuvable' });
+  if (!agenceAutorisee(req, v.agence_id)) return res.status(403).json({ error: 'Non autorisé' });
+  if (v.statut === 'annulee') return res.status(400).json({ error: 'Cette sortie est déjà annulée.' });
+  const { motif } = req.body;
+
+  await pool.query('UPDATE ventes_depot SET statut = $1, motif_annulation = $2 WHERE id = $3', ['annulee', motif, v.id]);
+  // Restitution automatique du stock : la quantité sortie retourne dans le stock du produit
+  await pool.query('UPDATE produits_depot SET quantite = quantite + $1 WHERE id = $2', [v.quantite, v.produit_id]);
+
+  const user = req.session.user;
+  await log(user.type === 'boss' ? 'Boss' : user.nom, v.agence_id, 'Sortie de stock annulée', `${v.quantite} unité(s) restituées au stock · motif: ${motif}`);
+  res.json({ ok: true });
 }));
 
 // ================= Export complet (sauvegarde manuelle) =================
