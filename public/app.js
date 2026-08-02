@@ -744,7 +744,7 @@
               </div>
               <div class="d3-row2">
                 <div class="d3-field"><label>Quantité initiale</label><input required type="number" min="0" step="0.01" name="quantite" value="0"></div>
-                <div class="d3-field"><label>Prix normal (F)</label><input required type="number" min="0" name="prixNormal"></div>
+                <div class="d3-field"><label>Prix normal (par unité, F)</label><input required type="number" min="0" name="prixNormal"></div>
               </div>
               <button class="d3-btn d3-btn-small" type="submit">Ajouter le produit</button>
             </form>
@@ -783,11 +783,12 @@
           <div class="d3-field"><label>Produit (client — produit)</label><select required name="produitId" id="depot-vente-produit"><option value="" disabled selected>Choisir…</option>${options}</select></div>
           <p class="d3-hist" id="depot-vente-info">&nbsp;</p>
           <div class="d3-row2">
-            <div class="d3-field"><label>Quantité vendue</label><input required type="number" min="0.01" step="0.01" name="quantite" value="1"></div>
+            <div class="d3-field"><label>Quantité vendue</label><input required type="number" min="0.01" step="0.01" name="quantite" id="depot-vente-qte" value="1"></div>
             <div class="d3-field"><label>Prix vendu (F)</label><input required type="number" min="0" name="prixVendu" id="depot-vente-prix"></div>
           </div>
-          <p class="d3-hist">Le prix peut être ajusté ponctuellement (négociation avec le client) sans changer le prix normal du produit.</p>
+          <p class="d3-hist">Le prix se calcule automatiquement (prix normal × quantité) — modifie-le à la main si le client négocie un autre prix.</p>
           <div class="d3-field"><label>Frais de livraison retenus (F)</label><input required type="number" min="0" name="fraisLivraison" value="0"></div>
+          <div class="d3-field"><label>Livreur</label><select required name="livreurId"><option value="" disabled selected>Choisir…</option>${livreurOptions(ag)}</select></div>
           <div class="d3-row2">
             <div class="d3-field"><label>Destinataire (optionnel)</label><input name="destinataire"></div>
             <div class="d3-field"><label>Contact destinataire (optionnel)</label><input name="contactDest"></div>
@@ -809,6 +810,7 @@
     const rows = list.map(v=>{
       const p = data.produitsDepot.find(x=>x.id===v.produitId) || {};
       const c = clientDepotById(v.clientId) || {};
+      const l = livreurById(v.livreurId) || {};
       return `<tr>
         <td class="d3-mono">${v.date}${isBoss?' · '+esc(agenceNom(v.agenceId)):''}</td>
         <td>${esc(c.nom||'—')}</td>
@@ -817,12 +819,13 @@
         <td class="d3-mono">${fmt(v.prixVendu)} F</td>
         <td class="d3-mono">${fmt(v.fraisLivraison)} F</td>
         <td class="d3-mono">${fmt(v.net)} F</td>
+        <td>${esc(l.nom||'—')}</td>
       </tr>`;
     }).join('');
     return totalsBlock(totals, p=>`<p class="d3-kpi-value">${p.nb}</p><p class="d3-hist">${fmt(p.net)} F net</p>`) + `
       <div class="d3-panel">
         <h3>${isBoss?'Toutes les sorties (dépôt)':'Mes sorties (dépôt)'}</h3>
-        ${list.length ? `<table class="d3-table"><thead><tr><th>Date</th><th>Client</th><th>Produit</th><th>Qté</th><th>Prix vendu</th><th>Frais</th><th>Net</th></tr></thead><tbody>${rows}</tbody></table>` : '<div class="d3-empty">Aucune sortie enregistrée.</div>'}
+        ${list.length ? `<table class="d3-table"><thead><tr><th>Date</th><th>Client</th><th>Produit</th><th>Qté</th><th>Prix vendu</th><th>Frais</th><th>Net</th><th>Livreur</th></tr></thead><tbody>${rows}</tbody></table>` : '<div class="d3-empty">Aucune sortie enregistrée.</div>'}
       </div>
     `;
   }
@@ -1015,18 +1018,24 @@
 
     // ---- Dépôt : nouvelle sortie ----
     const selProduit = document.getElementById('depot-vente-produit');
-    if (selProduit) selProduit.addEventListener('change', ()=>{
+    const qteInput = document.getElementById('depot-vente-qte');
+    function recalculerPrixDepot(){
       const opt = selProduit.selectedOptions[0];
-      document.getElementById('depot-vente-prix').value = opt.dataset.prix;
-      document.getElementById('depot-vente-info').textContent = 'Stock actuel : ' + opt.dataset.stock;
-    });
+      if (!opt || !opt.value) return;
+      const prixUnitaire = Number(opt.dataset.prix) || 0;
+      const qte = Number(qteInput.value) || 0;
+      document.getElementById('depot-vente-prix').value = (prixUnitaire * qte).toFixed(2).replace(/\.00$/,'');
+      document.getElementById('depot-vente-info').textContent = 'Stock actuel : ' + opt.dataset.stock + ' · Prix normal (unité) : ' + fmt(prixUnitaire) + ' F';
+    }
+    if (selProduit) selProduit.addEventListener('change', recalculerPrixDepot);
+    if (qteInput) qteInput.addEventListener('input', recalculerPrixDepot);
     const formDepotVente = document.getElementById('form-depot-vente');
     if (formDepotVente) formDepotVente.addEventListener('submit', async e=>{
       e.preventDefault(); const fd = new FormData(formDepotVente);
       try {
         const r = await api('/api/depot/ventes', { method:'POST', body: JSON.stringify({
           produitId: fd.get('produitId'), quantite: fd.get('quantite'), prixVendu: fd.get('prixVendu'), fraisLivraison: fd.get('fraisLivraison'),
-          destinataire: fd.get('destinataire'), contactDest: fd.get('contactDest'), lieu: fd.get('lieu'), heure: fd.get('heure')
+          destinataire: fd.get('destinataire'), contactDest: fd.get('contactDest'), lieu: fd.get('lieu'), heure: fd.get('heure'), livreurId: fd.get('livreurId')
         })});
         if (r.stockRestant < 0) alert('Sortie enregistrée. Attention : le stock de ce produit est maintenant négatif (' + r.stockRestant + ') — le client dépositaire n’a peut-être plus assez de stock disponible.');
         formDepotVente.reset(); await loadState();
