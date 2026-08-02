@@ -184,7 +184,23 @@ app.get('/api/state', requireAuth, ah(async (req, res) => {
     audit = auditRaw.map(a => ({ ...a, timestamp: Number(a.timestamp) }));
   }
 
-  res.json({ agences, secretaires, livreurs, livraisons, depenses, essence, prixEssence, audit, todayISO: todayISO(), currentMoisKey: currentMoisKey() });
+  const clientsDepot = (await pool.query('SELECT * FROM clients_depot ORDER BY nom ASC')).rows
+    .map(c => ({ id: c.id, nom: c.nom, contact: c.contact }));
+
+  const produitsDepotRaw = (await pool.query('SELECT * FROM produits_depot WHERE agence_id = ANY($1)', [scope])).rows;
+  const produitsDepot = produitsDepotRaw.map(p => ({
+    id: p.id, clientId: p.client_id, agenceId: p.agence_id, nom: p.nom, reference: p.reference,
+    categorie: p.categorie, emplacement: p.emplacement, quantite: p.quantite, prixNormal: p.prix_normal
+  }));
+
+  const ventesDepotRaw = (await pool.query('SELECT * FROM ventes_depot WHERE agence_id = ANY($1) ORDER BY created_at DESC', [scope])).rows;
+  const ventesDepot = ventesDepotRaw.map(v => ({
+    id: v.id, produitId: v.produit_id, clientId: v.client_id, agenceId: v.agence_id, quantite: v.quantite,
+    prixVendu: v.prix_vendu, fraisLivraison: v.frais_livraison, net: v.net, destinataire: v.destinataire,
+    contactDest: v.contact_dest, lieu: v.lieu, heure: v.heure, date: v.date, secretaireId: v.secretaire_id, createdAt: Number(v.created_at)
+  }));
+
+  res.json({ agences, secretaires, livreurs, livraisons, depenses, essence, prixEssence, audit, clientsDepot, produitsDepot, ventesDepot, todayISO: todayISO(), currentMoisKey: currentMoisKey() });
 }));
 
 // ================= Livraisons =================
@@ -346,6 +362,131 @@ app.post('/api/comptes/:id/unlock', requireBoss, ah(async (req, res) => {
 app.post('/api/agences/:id/rename', requireBoss, ah(async (req, res) => {
   await pool.query('UPDATE agences SET nom = $1 WHERE id = $2', [req.body.nom, req.params.id]);
   res.json({ ok: true });
+}));
+
+// ================= Dépôt (clients, produits en stock, ventes/sorties) =================
+
+app.post('/api/depot/clients', requireAuth, ah(async (req, res) => {
+  const { nom, contact } = req.body;
+  const id = uid();
+  await pool.query('INSERT INTO clients_depot (id, nom, contact) VALUES ($1,$2,$3)', [id, nom, contact || null]);
+  await log(req.session.user.type === 'boss' ? 'Boss' : req.session.user.nom, null, 'Client dépôt ajouté', nom);
+  res.json({ ok: true, id });
+}));
+
+app.post('/api/depot/produits', requireAuth, ah(async (req, res) => {
+  const user = req.session.user;
+  const { clientId, agenceId, nom, reference, categorie, emplacement, quantite, prixNormal } = req.body;
+  if (!agenceAutorisee(req, agenceId)) return res.status(403).json({ error: 'Non autorisé' });
+  const id = uid();
+  await pool.query(
+    `INSERT INTO produits_depot (id, client_id, agence_id, nom, reference, categorie, emplacement, quantite, prix_normal)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+    [id, clientId, agenceId, nom, reference || null, categorie || null, emplacement || null, Number(quantite) || 0, Number(prixNormal) || 0]
+  );
+  await log(user.type === 'boss' ? 'Boss' : user.nom, agenceId, 'Produit dépôt ajouté', `${nom} (x${quantite})`);
+  res.json({ ok: true, id });
+}));
+
+app.post('/api/depot/produits/:id/restock', requireAuth, ah(async (req, res) => {
+  const user = req.session.user;
+  const { rows } = await pool.query('SELECT * FROM produits_depot WHERE id = $1', [req.params.id]);
+  const p = rows[0];
+  if (!p) return res.status(404).json({ error: 'Introuvable' });
+  if (!agenceAutorisee(req, p.agence_id)) return res.status(403).json({ error: 'Non autorisé' });
+  const qte = Number(req.body.quantite) || 0;
+  await pool.query('UPDATE produits_depot SET quantite = quantite + $1 WHERE id = $2', [qte, p.id]);
+  await log(user.type === 'boss' ? 'Boss' : user.nom, p.agence_id, 'Réapprovisionnement', `${p.nom} +${qte}`);
+  res.json({ ok: true });
+}));
+
+app.post('/api/depot/ventes', requireAuth, ah(async (req, res) => {
+  const user = req.session.user;
+  const { produitId, quantite, prixVendu, fraisLivraison, destinataire, contactDest, lieu, heure } = req.body;
+  const { rows } = await pool.query('SELECT * FROM produits_depot WHERE id = $1', [produitId]);
+  const p = rows[0];
+  if (!p) return res.status(404).json({ error: 'Produit introuvable' });
+  if (!agenceAutorisee(req, p.agence_id)) return res.status(403).json({ error: 'Non autorisé' });
+
+  const qte = Number(quantite) || 0;
+  const prix = Number(prixVendu) || 0;
+  const frais = Number(fraisLivraison) || 0;
+  const net = prix - frais;
+  const id = uid();
+
+  await pool.query(
+    `INSERT INTO ventes_depot (id, produit_id, client_id, agence_id, quantite, prix_vendu, frais_livraison, net, destinataire, contact_dest, lieu, heure, date, secretaire_id, created_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+    [id, produitId, p.client_id, p.agence_id, qte, prix, frais, net, destinataire || null, contactDest || null, lieu || null, heure || null, todayISO(), user.type === 'boss' ? null : user.id, Date.now()]
+  );
+  const nouvelleQuantite = p.quantite - qte;
+  await pool.query('UPDATE produits_depot SET quantite = $1 WHERE id = $2', [nouvelleQuantite, p.id]);
+
+  await log(user.type === 'boss' ? 'Boss' : user.nom, p.agence_id, 'Sortie de stock (dépôt)', `${p.nom} x${qte} — ${prix} F` + (nouvelleQuantite < 0 ? ' ⚠ stock négatif' : ''));
+  res.json({ ok: true, id, stockRestant: nouvelleQuantite });
+}));
+
+// ================= Export complet (sauvegarde manuelle) =================
+
+app.get('/api/export/xlsx', requireBoss, ah(async (req, res) => {
+  const ExcelJS = require('exceljs');
+  const wb = new ExcelJS.Workbook();
+  wb.creator = 'MAYA Dispatch';
+  wb.created = new Date();
+
+  async function addSheet(name, sql, columns) {
+    const { rows } = await pool.query(sql);
+    const ws = wb.addWorksheet(name);
+    ws.columns = columns.map(c => ({ header: c.header, key: c.key, width: c.width || 18 }));
+    ws.getRow(1).font = { bold: true };
+    rows.forEach(r => ws.addRow(r));
+  }
+
+  await addSheet('Agences', 'SELECT id, nom FROM agences ORDER BY nom',
+    [{ header: 'ID', key: 'id' }, { header: 'Nom', key: 'nom' }]);
+
+  await addSheet('Secretaires', 'SELECT id, agence_id, nom, locked FROM secretaires ORDER BY agence_id, nom',
+    [{ header: 'ID', key: 'id' }, { header: 'Agence', key: 'agence_id' }, { header: 'Nom', key: 'nom' }, { header: 'Bloqué', key: 'locked' }]);
+
+  await addSheet('Livreurs', 'SELECT id, agence_id, nom, type, salaire_mensuel FROM livreurs ORDER BY agence_id, nom',
+    [{ header: 'ID', key: 'id' }, { header: 'Agence', key: 'agence_id' }, { header: 'Nom', key: 'nom' }, { header: 'Type', key: 'type' }, { header: 'Salaire mensuel', key: 'salaire_mensuel' }]);
+
+  await addSheet('Taux commissions', 'SELECT livreur_id, taux, depuis FROM taux_history ORDER BY livreur_id, depuis',
+    [{ header: 'Livreur ID', key: 'livreur_id' }, { header: 'Taux (%)', key: 'taux' }, { header: 'Depuis', key: 'depuis' }]);
+
+  await addSheet('Livraisons', `SELECT date, agence_id, secretaire_id, expediteur, contact_exp, destinataire, contact_dest, nature_colis, lieu, heure, montant, livreur_id, statut, motif_annulation FROM livraisons ORDER BY date DESC`,
+    [{ header: 'Date', key: 'date' }, { header: 'Agence', key: 'agence_id' }, { header: 'Secrétaire', key: 'secretaire_id' }, { header: 'Expéditeur', key: 'expediteur' },
+     { header: 'Contact exp.', key: 'contact_exp' }, { header: 'Destinataire', key: 'destinataire' }, { header: 'Contact dest.', key: 'contact_dest' },
+     { header: 'Colis', key: 'nature_colis' }, { header: 'Lieu', key: 'lieu' }, { header: 'Heure', key: 'heure' }, { header: 'Montant', key: 'montant' },
+     { header: 'Livreur ID', key: 'livreur_id' }, { header: 'Statut', key: 'statut' }, { header: 'Motif annulation', key: 'motif_annulation' }]);
+
+  await addSheet('Depenses', 'SELECT date, agence_id, montant, note, livreur_id, secretaire_id FROM depenses ORDER BY date DESC',
+    [{ header: 'Date', key: 'date' }, { header: 'Agence', key: 'agence_id' }, { header: 'Montant', key: 'montant' }, { header: 'Note', key: 'note' }, { header: 'Livreur ID', key: 'livreur_id' }, { header: 'Secrétaire', key: 'secretaire_id' }]);
+
+  await addSheet('Essence', 'SELECT date, agence_id, livreur_id, litres, prix_applique, cout_total, secretaire_id FROM essence ORDER BY date DESC',
+    [{ header: 'Date', key: 'date' }, { header: 'Agence', key: 'agence_id' }, { header: 'Livreur ID', key: 'livreur_id' }, { header: 'Litres', key: 'litres' }, { header: 'Prix appliqué', key: 'prix_applique' }, { header: 'Coût total', key: 'cout_total' }, { header: 'Secrétaire', key: 'secretaire_id' }]);
+
+  await addSheet('Clients depot', 'SELECT id, nom, contact FROM clients_depot ORDER BY nom',
+    [{ header: 'ID', key: 'id' }, { header: 'Nom', key: 'nom' }, { header: 'Contact', key: 'contact' }]);
+
+  await addSheet('Produits depot', 'SELECT id, client_id, agence_id, nom, reference, categorie, emplacement, quantite, prix_normal FROM produits_depot ORDER BY client_id, nom',
+    [{ header: 'ID', key: 'id' }, { header: 'Client ID', key: 'client_id' }, { header: 'Agence', key: 'agence_id' }, { header: 'Produit', key: 'nom' },
+     { header: 'Référence', key: 'reference' }, { header: 'Catégorie', key: 'categorie' }, { header: 'Emplacement', key: 'emplacement' }, { header: 'Stock', key: 'quantite' }, { header: 'Prix normal', key: 'prix_normal' }]);
+
+  await addSheet('Ventes depot', 'SELECT date, agence_id, client_id, produit_id, quantite, prix_vendu, frais_livraison, net, destinataire, contact_dest, lieu, heure, secretaire_id FROM ventes_depot ORDER BY date DESC',
+    [{ header: 'Date', key: 'date' }, { header: 'Agence', key: 'agence_id' }, { header: 'Client ID', key: 'client_id' }, { header: 'Produit ID', key: 'produit_id' },
+     { header: 'Quantité', key: 'quantite' }, { header: 'Prix vendu', key: 'prix_vendu' }, { header: 'Frais livraison', key: 'frais_livraison' }, { header: 'Net', key: 'net' },
+     { header: 'Destinataire', key: 'destinataire' }, { header: 'Contact dest.', key: 'contact_dest' }, { header: 'Lieu', key: 'lieu' }, { header: 'Heure', key: 'heure' }, { header: 'Secrétaire', key: 'secretaire_id' }]);
+
+  await addSheet('Journal audit', 'SELECT timestamp, who, agence_id, action, detail FROM audit ORDER BY timestamp DESC LIMIT 5000',
+    [{ header: 'Horodatage', key: 'timestamp' }, { header: 'Qui', key: 'who' }, { header: 'Agence', key: 'agence_id' }, { header: 'Action', key: 'action' }, { header: 'Détail', key: 'detail' }]);
+
+  const dateStr = todayISO();
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', `attachment; filename="maya-export-${dateStr}.xlsx"`);
+  await wb.xlsx.write(res);
+  res.end();
+  await log('Boss', null, 'Export de sauvegarde', 'Export Excel complet téléchargé');
 }));
 
 const PORT = process.env.PORT || 3000;

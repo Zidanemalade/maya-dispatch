@@ -95,6 +95,39 @@ async function init() {
       action TEXT,
       detail TEXT
     );
+
+    CREATE TABLE IF NOT EXISTS clients_depot (
+      id TEXT PRIMARY KEY,
+      nom TEXT NOT NULL,
+      contact TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS produits_depot (
+      id TEXT PRIMARY KEY,
+      client_id TEXT NOT NULL,
+      agence_id TEXT NOT NULL,
+      nom TEXT NOT NULL,
+      reference TEXT,
+      categorie TEXT,
+      emplacement TEXT,
+      quantite DOUBLE PRECISION NOT NULL DEFAULT 0,
+      prix_normal DOUBLE PRECISION NOT NULL DEFAULT 0
+    );
+
+    CREATE TABLE IF NOT EXISTS ventes_depot (
+      id TEXT PRIMARY KEY,
+      produit_id TEXT NOT NULL,
+      client_id TEXT NOT NULL,
+      agence_id TEXT NOT NULL,
+      quantite DOUBLE PRECISION NOT NULL,
+      prix_vendu DOUBLE PRECISION NOT NULL,
+      frais_livraison DOUBLE PRECISION NOT NULL DEFAULT 0,
+      net DOUBLE PRECISION NOT NULL,
+      destinataire TEXT, contact_dest TEXT, lieu TEXT, heure TEXT,
+      date TEXT NOT NULL,
+      secretaire_id TEXT,
+      created_at BIGINT NOT NULL
+    );
   `);
 
   const { rows } = await pool.query('SELECT COUNT(*)::int AS c FROM agences');
