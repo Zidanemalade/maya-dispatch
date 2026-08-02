@@ -9,6 +9,9 @@
   let expandedWeekKey = null;
   let expandedDayKey = null;
   let editingLivraisonId = null;
+  let depotClientFiltre = null;
+  let depotFactureClientId = null;
+  let depotFacturePeriode = 'jour';
   let data = null;
   let loaded = false;
   let pollTimer = null;
@@ -131,8 +134,8 @@
     if (!user) { stopPoll(); renderLogin(); return; }
     const isBoss = user.type === 'boss';
     const tabs = isBoss
-      ? [['dashboard','Tableau de bord'],['stats','Par livreur'],['livraisons','Livraisons'],['depenses','Dépenses'],['essence','Essence'],['livreurs','Livreurs'],['comptes','Comptes'],['archives','Archives'],['audit','Journal']]
-      : [['saisie','Nouvelle livraison'],['mes-livraisons','Mes livraisons'],['depenses','Dépenses'],['essence','Essence'],['mon-compte','Mon compte']];
+      ? [['dashboard','Tableau de bord'],['stats','Par livreur'],['livraisons','Livraisons'],['depenses','Dépenses'],['essence','Essence'],['livreurs','Livreurs'],['depot-clients','Dépôt : Stock'],['depot-sorties','Dépôt : Sorties'],['depot-facture','Dépôt : Facture'],['comptes','Comptes'],['archives','Archives'],['audit','Journal']]
+      : [['saisie','Nouvelle livraison'],['mes-livraisons','Mes livraisons'],['depenses','Dépenses'],['essence','Essence'],['depot-sortie','Dépôt : Sortie'],['depot-clients','Dépôt : Stock'],['depot-historique','Dépôt : Historique'],['mon-compte','Mon compte']];
     if (!activeTab || !tabs.find(t=>t[0]===activeTab)) activeTab = tabs[0][0];
 
     root.innerHTML = `
@@ -163,6 +166,9 @@
       else if (activeTab==='depenses') content.innerHTML = renderDepenses(true);
       else if (activeTab==='essence') content.innerHTML = renderEssence(true);
       else if (activeTab==='livreurs') content.innerHTML = renderLivreursAdmin();
+      else if (activeTab==='depot-clients') content.innerHTML = renderDepotClients(true);
+      else if (activeTab==='depot-sorties') content.innerHTML = renderDepotSorties(true);
+      else if (activeTab==='depot-facture') content.innerHTML = renderDepotFacture();
       else if (activeTab==='comptes') content.innerHTML = renderComptes();
       else if (activeTab==='archives') content.innerHTML = renderArchives();
       else if (activeTab==='audit') content.innerHTML = renderAudit();
@@ -171,6 +177,9 @@
       else if (activeTab==='mes-livraisons') { const liv = data.livraisons.filter(c=>c.secretaireId===user.id); content.innerHTML = totalsBlock(livraisonTotals(liv), p => `<p class="d3-kpi-value">${p.nb}</p><p class="d3-hist">${fmt(p.montant)} F</p>`) + renderLivraisonsTable(liv, false); }
       else if (activeTab==='depenses') content.innerHTML = renderDepenses(false);
       else if (activeTab==='essence') content.innerHTML = renderEssence(false);
+      else if (activeTab==='depot-sortie') content.innerHTML = renderDepotSortie();
+      else if (activeTab==='depot-clients') content.innerHTML = renderDepotClients(false);
+      else if (activeTab==='depot-historique') content.innerHTML = renderDepotSorties(false);
       else if (activeTab==='mon-compte') content.innerHTML = renderMonCompte();
     }
     attachEvents();
@@ -486,6 +495,11 @@
           </div>
         `).join('')}
       </div>
+      <div class="d3-panel">
+        <h3>Sauvegarde des données</h3>
+        <p class="d3-hist" style="margin-bottom:12px;">Télécharge toutes les données de l'entreprise (livraisons, dépenses, essence, stock, ventes, etc.) dans un fichier Excel — à garder sur ton ordinateur, une clé USB, ou Google Drive. Recommandé au moins une fois par semaine.</p>
+        <a href="/api/export/xlsx" class="d3-btn" style="text-decoration:none; display:inline-block;">Télécharger la sauvegarde (Excel)</a>
+      </div>
     `;
   }
 
@@ -681,6 +695,209 @@
     `;
   }
 
+  function clientDepotById(id){ return data.clientsDepot.find(c=>c.id===id); }
+
+  function ventesDepotTotals(list){
+    const agg = p => { const f = list.filter(v=>isSamePeriod(v.date,p)); return { nb:f.length, net:f.reduce((s,v)=>s+v.net,0) }; };
+    return { jour:agg('jour'), semaine:agg('semaine'), mois:agg('mois') };
+  }
+
+  function renderDepotClients(isBoss){
+    const scope = scopeAgences();
+    const agenceForForm = isBoss ? ((currentAgenceView==='all'||!currentAgenceView) ? data.agences[0].id : currentAgenceView) : user.agenceId;
+    const clients = data.clientsDepot;
+    const clientBlocks = clients.filter(c => !depotClientFiltre || depotClientFiltre===c.id).map(c=>{
+      const produits = data.produitsDepot.filter(p=>p.clientId===c.id && scope.includes(p.agenceId));
+      const rows = produits.map(p=>`
+        <tr>
+          <td>${esc(p.nom)}</td>
+          <td>${esc(p.reference||'—')}</td>
+          <td>${esc(p.categorie||'—')}</td>
+          <td>${esc(p.emplacement||'—')}</td>
+          <td class="d3-mono" style="${p.quantite<=0?'color:var(--coral);':''}">${p.quantite}</td>
+          <td class="d3-mono">${fmt(p.prixNormal)} F</td>
+          <td><div class="d3-inline-form"><input type="number" min="0" style="width:70px" id="restock-${p.id}" placeholder="+qté"><button class="d3-btn d3-btn-small" data-action="restock" data-id="${p.id}">Ajouter</button></div></td>
+        </tr>
+      `).join('');
+      return `
+        <div class="d3-panel">
+          <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+            <div><strong>${esc(c.nom)}</strong>${c.contact?` <span class="d3-hist">(${esc(c.contact)})</span>`:''}</div>
+            <button class="d3-btn d3-btn-ghost d3-btn-small" data-action="filtre-client-depot" data-id="${c.id}">${depotClientFiltre===c.id?'Voir tous les clients':'Filtrer sur ce client'}</button>
+          </div>
+          ${produits.length ? `
+          <table class="d3-table" style="margin-top:10px;">
+            <thead><tr><th>Produit</th><th>Réf.</th><th>Catégorie</th><th>Emplacement</th><th>Stock</th><th>Prix normal</th><th>Réappro.</th></tr></thead>
+            <tbody>${rows}</tbody>
+          </table>` : '<p class="d3-empty" style="margin-top:10px;">Aucun produit en stock pour ce client (dans cette vue).</p>'}
+          <details style="margin-top:12px;">
+            <summary style="cursor:pointer; color:var(--amber); font-size:13px;">+ Ajouter un produit pour ${esc(c.nom)}</summary>
+            <form class="form-add-produit" data-client="${c.id}" style="margin-top:10px;">
+              ${(isBoss && (currentAgenceView==='all'||!currentAgenceView)) ? `<div class="d3-field"><label>Agence</label><select name="agenceId">${data.agences.map(a=>`<option value="${a.id}">${esc(a.nom)}</option>`).join('')}</select></div>` : `<input type="hidden" name="agenceId" value="${agenceForForm}">`}
+              <div class="d3-row2">
+                <div class="d3-field"><label>Nom du produit</label><input required name="nom"></div>
+                <div class="d3-field"><label>Référence</label><input name="reference"></div>
+              </div>
+              <div class="d3-row2">
+                <div class="d3-field"><label>Catégorie</label><input name="categorie"></div>
+                <div class="d3-field"><label>Emplacement (optionnel)</label><input name="emplacement"></div>
+              </div>
+              <div class="d3-row2">
+                <div class="d3-field"><label>Quantité initiale</label><input required type="number" min="0" step="0.01" name="quantite" value="0"></div>
+                <div class="d3-field"><label>Prix normal (F)</label><input required type="number" min="0" name="prixNormal"></div>
+              </div>
+              <button class="d3-btn d3-btn-small" type="submit">Ajouter le produit</button>
+            </form>
+          </details>
+        </div>
+      `;
+    }).join('');
+
+    return `
+      <div class="d3-panel">
+        <h3>Ajouter un client dépositaire</h3>
+        <form id="form-add-client-depot">
+          <div class="d3-row2">
+            <div class="d3-field"><label>Nom du client</label><input required name="nom" placeholder="Ex: Boutique Prisca"></div>
+            <div class="d3-field"><label>Contact (optionnel)</label><input name="contact" placeholder="Téléphone"></div>
+          </div>
+          <button class="d3-btn" type="submit">Ajouter</button>
+        </form>
+      </div>
+      ${clients.length ? clientBlocks : '<div class="d3-panel"><div class="d3-empty">Aucun client dépositaire enregistré.</div></div>'}
+    `;
+  }
+
+  function renderDepotSortie(){
+    const ag = user.agenceId;
+    const produitsDispo = data.produitsDepot.filter(p=>p.agenceId===ag);
+    if (produitsDispo.length===0) return '<div class="d3-panel"><div class="d3-empty">Aucun produit en stock pour cette agence — ajoute d’abord un client et un produit dans l’onglet « Dépôt : Stock ».</div></div>';
+    const options = produitsDispo.map(p=>{
+      const c = clientDepotById(p.clientId);
+      return `<option value="${p.id}" data-prix="${p.prixNormal}" data-stock="${p.quantite}">${esc((c||{}).nom||'—')} — ${esc(p.nom)} (stock: ${p.quantite})</option>`;
+    }).join('');
+    return `
+      <div class="d3-panel" style="max-width:560px;">
+        <h3>Nouvelle sortie de stock (dépôt)</h3>
+        <form id="form-depot-vente">
+          <div class="d3-field"><label>Produit (client — produit)</label><select required name="produitId" id="depot-vente-produit"><option value="" disabled selected>Choisir…</option>${options}</select></div>
+          <p class="d3-hist" id="depot-vente-info">&nbsp;</p>
+          <div class="d3-row2">
+            <div class="d3-field"><label>Quantité vendue</label><input required type="number" min="0.01" step="0.01" name="quantite" value="1"></div>
+            <div class="d3-field"><label>Prix vendu (F)</label><input required type="number" min="0" name="prixVendu" id="depot-vente-prix"></div>
+          </div>
+          <p class="d3-hist">Le prix peut être ajusté ponctuellement (négociation avec le client) sans changer le prix normal du produit.</p>
+          <div class="d3-field"><label>Frais de livraison retenus (F)</label><input required type="number" min="0" name="fraisLivraison" value="0"></div>
+          <div class="d3-row2">
+            <div class="d3-field"><label>Destinataire (optionnel)</label><input name="destinataire"></div>
+            <div class="d3-field"><label>Contact destinataire (optionnel)</label><input name="contactDest"></div>
+          </div>
+          <div class="d3-row2">
+            <div class="d3-field"><label>Lieu de livraison (optionnel)</label><input name="lieu"></div>
+            <div class="d3-field"><label>Heure (optionnel)</label><input type="time" name="heure"></div>
+          </div>
+          <button class="d3-btn" type="submit">Enregistrer la sortie</button>
+        </form>
+        <p class="d3-note">Pense aussi à enregistrer la livraison normale dans l’onglet « Nouvelle livraison » si un livreur doit l’acheminer — ce sont deux enregistrements distincts (celui-ci gère le stock, l’autre les statistiques de livraison).</p>
+      </div>
+    `;
+  }
+
+  function renderDepotSorties(isBoss){
+    const list = isBoss ? data.ventesDepot : data.ventesDepot.filter(v=>v.secretaireId===user.id);
+    const totals = ventesDepotTotals(list);
+    const rows = list.map(v=>{
+      const p = data.produitsDepot.find(x=>x.id===v.produitId) || {};
+      const c = clientDepotById(v.clientId) || {};
+      return `<tr>
+        <td class="d3-mono">${v.date}${isBoss?' · '+esc(agenceNom(v.agenceId)):''}</td>
+        <td>${esc(c.nom||'—')}</td>
+        <td>${esc(p.nom||'—')}</td>
+        <td class="d3-mono">${v.quantite}</td>
+        <td class="d3-mono">${fmt(v.prixVendu)} F</td>
+        <td class="d3-mono">${fmt(v.fraisLivraison)} F</td>
+        <td class="d3-mono">${fmt(v.net)} F</td>
+      </tr>`;
+    }).join('');
+    return totalsBlock(totals, p=>`<p class="d3-kpi-value">${p.nb}</p><p class="d3-hist">${fmt(p.net)} F net</p>`) + `
+      <div class="d3-panel">
+        <h3>${isBoss?'Toutes les sorties (dépôt)':'Mes sorties (dépôt)'}</h3>
+        ${list.length ? `<table class="d3-table"><thead><tr><th>Date</th><th>Client</th><th>Produit</th><th>Qté</th><th>Prix vendu</th><th>Frais</th><th>Net</th></tr></thead><tbody>${rows}</tbody></table>` : '<div class="d3-empty">Aucune sortie enregistrée.</div>'}
+      </div>
+    `;
+  }
+
+  function renderDepotFacture(){
+    const clients = data.clientsDepot;
+    if (clients.length===0) return '<div class="d3-panel"><div class="d3-empty">Aucun client dépositaire enregistré.</div></div>';
+    const selectedId = depotFactureClientId || clients[0].id;
+    const periodeLabel = depotFacturePeriode==='jour' ? "Aujourd'hui" : "Ce mois";
+    const list = data.ventesDepot.filter(v=>v.clientId===selectedId && isSamePeriod(v.date, depotFacturePeriode));
+    const totalVendu = list.reduce((s,v)=>s+v.prixVendu,0);
+    const totalFrais = list.reduce((s,v)=>s+v.fraisLivraison,0);
+    const totalNet = list.reduce((s,v)=>s+v.net,0);
+    const rows = list.map(v=>{
+      const p = data.produitsDepot.find(x=>x.id===v.produitId) || {};
+      return `<tr><td class="d3-mono">${v.date}</td><td>${esc(p.nom||'—')}</td><td class="d3-mono">${v.quantite}</td><td class="d3-mono">${fmt(v.prixVendu)} F</td><td class="d3-mono">${fmt(v.fraisLivraison)} F</td><td class="d3-mono">${fmt(v.net)} F</td></tr>`;
+    }).join('');
+    const clientNom = (clientDepotById(selectedId)||{}).nom||'';
+
+    return `
+      <div class="d3-panel">
+        <h3>Générer une facture</h3>
+        <div class="d3-inline-form">
+          <div class="d3-field"><label>Client</label><select id="facture-client-select">${clients.map(c=>`<option value="${c.id}" ${c.id===selectedId?'selected':''}>${esc(c.nom)}</option>`).join('')}</select></div>
+          <div class="d3-field"><label>Période</label><select id="facture-periode-select"><option value="jour" ${depotFacturePeriode==='jour'?'selected':''}>Aujourd'hui</option><option value="mois" ${depotFacturePeriode==='mois'?'selected':''}>Ce mois</option></select></div>
+          <button class="d3-btn d3-btn-small" id="btn-generer-facture">Afficher</button>
+        </div>
+      </div>
+      <div class="d3-panel" id="facture-zone">
+        <h3>Facture — ${esc(clientNom)} · ${periodeLabel}</h3>
+        ${list.length ? `
+        <table class="d3-table">
+          <thead><tr><th>Date</th><th>Produit</th><th>Qté</th><th>Prix vendu</th><th>Frais livraison</th><th>Net dû au client</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+        <table class="d3-table" style="margin-top:10px; max-width:400px;">
+          <tbody>
+            <tr><td>Total vendu</td><td class="d3-mono">${fmt(totalVendu)} F</td></tr>
+            <tr><td>Frais de livraison retenus</td><td class="d3-mono">− ${fmt(totalFrais)} F</td></tr>
+            <tr><td><strong>Net dû au client</strong></td><td class="d3-mono"><strong>${fmt(totalNet)} F</strong></td></tr>
+          </tbody>
+        </table>
+        <button class="d3-btn d3-btn-ghost" id="btn-print-facture" style="margin-top:12px;">Imprimer / Exporter en PDF</button>
+        ` : '<div class="d3-empty">Aucune vente pour ce client sur cette période.</div>'}
+      </div>
+    `;
+  }
+
+  function printFacture(clientNom, periodeLabel, rowsHtml, totalVendu, totalFrais, totalNet){
+    const w = window.open('', '_blank');
+    if (!w) { alert('Le navigateur a bloqué l’ouverture de la fenêtre d’impression — autorise les pop-ups pour ce site.'); return; }
+    w.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Facture ${esc(clientNom)}</title>
+      <style>
+        body{font-family:Arial,sans-serif; padding:30px; color:#111;}
+        h1{font-size:20px; margin-bottom:2px;} h2{font-size:15px; color:#555; font-weight:normal; margin-top:0;}
+        table{width:100%; border-collapse:collapse; margin-top:16px;}
+        th,td{border:1px solid #ccc; padding:6px 10px; text-align:left; font-size:13px;}
+        th{background:#f2f2f2;}
+        .totaux{width:320px; margin-left:auto;}
+        .totaux td:last-child{text-align:right;}
+      </style></head><body>
+        <h1>MAYA Delivery Service</h1>
+        <h2>Facture — ${esc(clientNom)} · ${esc(periodeLabel)}</h2>
+        <table><thead><tr><th>Date</th><th>Produit</th><th>Qté</th><th>Prix vendu</th><th>Frais livraison</th><th>Net</th></tr></thead><tbody>${rowsHtml}</tbody></table>
+        <table class="totaux">
+          <tr><td>Total vendu</td><td>${fmt(totalVendu)} F</td></tr>
+          <tr><td>Frais de livraison</td><td>− ${fmt(totalFrais)} F</td></tr>
+          <tr><td><strong>Net dû au client</strong></td><td><strong>${fmt(totalNet)} F</strong></td></tr>
+        </table>
+      </body></html>`);
+    w.document.close();
+    w.focus();
+    setTimeout(()=>w.print(), 300);
+  }
+
   function attachEvents(){
     const logoutBtn = document.getElementById('btn-logout');
     if (logoutBtn) logoutBtn.addEventListener('click', async ()=>{ try{ await api('/api/logout',{method:'POST'});}catch(e){} user=null; data=null; loaded=false; currentAgenceView=null; stopPoll(); render(); });
@@ -768,6 +985,76 @@
 
     const btnMyPass = document.getElementById('btn-change-my-pass');
     if (btnMyPass) btnMyPass.addEventListener('click', async ()=>{ const i=document.getElementById('my-newpass'); if(i.value){ try { await api('/api/account/password', {method:'POST', body: JSON.stringify({newPassword:i.value})}); alert('Mot de passe modifié.'); i.value=''; } catch(err){ alert(err.message); } } });
+
+    // ---- Dépôt : clients & produits ----
+    const formAddClientDepot = document.getElementById('form-add-client-depot');
+    if (formAddClientDepot) formAddClientDepot.addEventListener('submit', async e=>{
+      e.preventDefault(); const fd = new FormData(formAddClientDepot);
+      try { await api('/api/depot/clients', { method:'POST', body: JSON.stringify({ nom: fd.get('nom'), contact: fd.get('contact') }) }); await loadState(); }
+      catch(err){ alert(err.message); }
+    });
+    root.querySelectorAll('.form-add-produit').forEach(f=>f.addEventListener('submit', async e=>{
+      e.preventDefault(); const fd = new FormData(f);
+      try {
+        await api('/api/depot/produits', { method:'POST', body: JSON.stringify({
+          clientId: f.dataset.client, agenceId: fd.get('agenceId'), nom: fd.get('nom'), reference: fd.get('reference'),
+          categorie: fd.get('categorie'), emplacement: fd.get('emplacement'), quantite: fd.get('quantite'), prixNormal: fd.get('prixNormal')
+        })});
+        await loadState();
+      } catch(err){ alert(err.message); }
+    }));
+    root.querySelectorAll('[data-action="restock"]').forEach(b=>b.addEventListener('click', async ()=>{
+      const i = document.getElementById('restock-'+b.dataset.id);
+      if (i.value === '' || Number(i.value) <= 0) return;
+      try { await api('/api/depot/produits/'+b.dataset.id+'/restock', { method:'POST', body: JSON.stringify({ quantite: i.value }) }); await loadState(); }
+      catch(err){ alert(err.message); }
+    }));
+    root.querySelectorAll('[data-action="filtre-client-depot"]').forEach(b=>b.addEventListener('click', ()=>{
+      depotClientFiltre = (depotClientFiltre===b.dataset.id) ? null : b.dataset.id; render();
+    }));
+
+    // ---- Dépôt : nouvelle sortie ----
+    const selProduit = document.getElementById('depot-vente-produit');
+    if (selProduit) selProduit.addEventListener('change', ()=>{
+      const opt = selProduit.selectedOptions[0];
+      document.getElementById('depot-vente-prix').value = opt.dataset.prix;
+      document.getElementById('depot-vente-info').textContent = 'Stock actuel : ' + opt.dataset.stock;
+    });
+    const formDepotVente = document.getElementById('form-depot-vente');
+    if (formDepotVente) formDepotVente.addEventListener('submit', async e=>{
+      e.preventDefault(); const fd = new FormData(formDepotVente);
+      try {
+        const r = await api('/api/depot/ventes', { method:'POST', body: JSON.stringify({
+          produitId: fd.get('produitId'), quantite: fd.get('quantite'), prixVendu: fd.get('prixVendu'), fraisLivraison: fd.get('fraisLivraison'),
+          destinataire: fd.get('destinataire'), contactDest: fd.get('contactDest'), lieu: fd.get('lieu'), heure: fd.get('heure')
+        })});
+        if (r.stockRestant < 0) alert('Sortie enregistrée. Attention : le stock de ce produit est maintenant négatif (' + r.stockRestant + ') — le client dépositaire n’a peut-être plus assez de stock disponible.');
+        formDepotVente.reset(); await loadState();
+      } catch(err){ alert(err.message); }
+    });
+
+    // ---- Dépôt : facture ----
+    const btnGenererFacture = document.getElementById('btn-generer-facture');
+    if (btnGenererFacture) btnGenererFacture.addEventListener('click', ()=>{
+      depotFactureClientId = document.getElementById('facture-client-select').value;
+      depotFacturePeriode = document.getElementById('facture-periode-select').value;
+      render();
+    });
+    const btnPrintFacture = document.getElementById('btn-print-facture');
+    if (btnPrintFacture) btnPrintFacture.addEventListener('click', ()=>{
+      const clientNom = (clientDepotById(depotFactureClientId || (data.clientsDepot[0]||{}).id)||{}).nom || '';
+      const periodeLabel = depotFacturePeriode==='jour' ? "Aujourd'hui" : "Ce mois";
+      const selectedId = depotFactureClientId || (data.clientsDepot[0]||{}).id;
+      const list = data.ventesDepot.filter(v=>v.clientId===selectedId && isSamePeriod(v.date, depotFacturePeriode));
+      const totalVendu = list.reduce((s,v)=>s+v.prixVendu,0);
+      const totalFrais = list.reduce((s,v)=>s+v.fraisLivraison,0);
+      const totalNet = list.reduce((s,v)=>s+v.net,0);
+      const rowsHtml = list.map(v=>{
+        const p = data.produitsDepot.find(x=>x.id===v.produitId) || {};
+        return `<tr><td>${v.date}</td><td>${esc(p.nom||'—')}</td><td>${v.quantite}</td><td>${fmt(v.prixVendu)} F</td><td>${fmt(v.fraisLivraison)} F</td><td>${fmt(v.net)} F</td></tr>`;
+      }).join('');
+      printFacture(clientNom, periodeLabel, rowsHtml, totalVendu, totalFrais, totalNet);
+    });
 
     if (user && user.type==='boss') startPoll(); else stopPoll();
   }
