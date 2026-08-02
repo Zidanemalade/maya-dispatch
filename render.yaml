@@ -10,3 +10,5 @@ services:
         value: production
       - key: SESSION_SECRET
         generateValue: true
+      - key: DATABASE_URL
+        sync: false

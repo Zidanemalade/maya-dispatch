@@ -1,27 +1,42 @@
-# MAYA Dispatch — Version de production
+# MAYA Dispatch — Version de production (gratuite)
 
 Application de gestion des livraisons pour MAYA Delivery Service (Cotonou & Porto-Novo).
 
-Contrairement au prototype de démonstration testé précédemment, cette version :
-- utilise une **vraie base de données** (SQLite, fichier `maya.db`) qui persiste durablement ;
-- **chiffre les mots de passe** (bcrypt) — jamais stockés en clair ;
-- gère de **vraies sessions sécurisées** (cookies signés côté serveur) ;
-- applique le **blocage après 3 échecs de connexion**, débloqué uniquement par le Boss ;
-- calcule automatiquement le **cycle du 5 au 5**, les **commissions historisées**, le **prix de l'essence historisé**, etc. — toute la logique métier validée dans le prototype.
+Cette version utilise :
+- **Supabase** (base de données PostgreSQL) — plan gratuit permanent
+- **Render** (hébergement du serveur) — plan gratuit
+- Coût réel : **0 F CFA/mois**
 
-## 1. Installation (sur ton ordinateur, pour tester)
+**Compromis à connaître avec cette configuration 100 % gratuite :**
+- Le serveur Render gratuit "s'endort" après ~15 minutes sans visite : la première requête après une pause peut prendre 30 à 60 secondes.
+- Le projet Supabase gratuit peut se mettre en pause après **7 jours consécutifs sans aucune activité** (pas de problème si l'application est utilisée quotidiennement ; à surveiller si l'agence ferme plus d'une semaine). Une visite sur le tableau de bord Supabase suffit à le réactiver en cas de pause.
+- Aucun fournisseur ne garantit qu'un plan gratuit reste gratuit indéfiniment (rare, mais possible qu'ils changent leurs conditions).
 
-Prérequis : [Node.js](https://nodejs.org) version 18 ou plus récente.
+## 1. Créer la base de données (Supabase — gratuit)
+
+1. Va sur [supabase.com](https://supabase.com), crée un compte (gratuit, via GitHub ou email).
+2. Crée un nouveau projet (choisis une région proche, ex: Europe si rien de plus proche du Bénin n'est proposé).
+3. Une fois le projet créé, va dans **Project Settings → Database**.
+4. Cherche la section **Connection string** → onglet **URI**. Copie cette adresse (elle ressemble à `postgresql://postgres:[MOT-DE-PASSE]@...supabase.co:5432/postgres`).
+5. Garde cette adresse précieusement — c'est la clé qui connecte l'application à sa base de données.
+
+## 2. Installer et tester en local (optionnel)
 
 ```bash
 cd maya-app
 npm install
-node server.js
+DATABASE_URL="colle-ici-l-adresse-supabase" node server.js
 ```
+Ouvre **http://localhost:3000**.
 
-Puis ouvre **http://localhost:3000** dans ton navigateur.
+## 3. Déployer sur Render (gratuit)
 
-## 2. Comptes par défaut (à changer immédiatement après la première connexion)
+1. Pousse ce code sur GitHub (comme fait précédemment).
+2. Sur Render, **New → Blueprint**, sélectionne le dépôt. Le fichier `render.yaml` configure tout automatiquement.
+3. Render va demander de renseigner manuellement la variable **DATABASE_URL** (elle n'est pas générée automatiquement) : colle l'adresse Supabase récupérée à l'étape 1.
+4. Clique "Apply" — aucune carte bancaire n'est nécessaire avec cette configuration.
+
+## 4. Comptes par défaut (à changer immédiatement après la première connexion)
 
 | Profil | Identifiant | Mot de passe par défaut |
 |---|---|---|
@@ -31,52 +46,22 @@ Puis ouvre **http://localhost:3000** dans ton navigateur.
 | Secrétaire 2 — Porto-Novo | `pn2` | `1234` |
 | Boss | — | `admin` |
 
-Chacun peut changer son mot de passe dans l'onglet **Mon compte** (secrétaires) ou **Comptes** (Boss).
+## 5. Sauvegardes
 
-## 3. Déploiement en production (pour un usage réel au quotidien)
+Même gratuite, la base Supabase peut être sauvegardée manuellement : dans le tableau de bord Supabase → **Database → Backups**, ou via un export SQL périodique. Ne néglige pas cette étape — c'est la seule protection contre une perte de données.
 
-Cette application est un serveur Node.js classique. Trois options courantes, du plus simple au plus flexible :
+## 6. Passer un jour au plan payant
 
-### Option simple — hébergement clé en main (recommandé pour démarrer)
-Services comme **Render**, **Railway** ou **Fly.io** : tu connectes ton dépôt de code, ils installent et démarrent l'application automatiquement. Compte quelques dollars par mois. Il faut monter un **disque persistant** pour que le fichier `maya.db` ne soit pas perdu à chaque redémarrage (toutes ces plateformes le permettent).
+Si l'activité grandit et que les compromis du plan gratuit deviennent gênants (lenteur au réveil, risque de pause), il suffit de changer `plan: free` en `plan: starter` dans `render.yaml` et de mettre à niveau le projet Supabase — aucune autre modification du code n'est nécessaire.
 
-### Option VPS (plus de contrôle, un peu plus technique)
-Un petit serveur privé (ex: 2-5 €/mois chez OVH, Hetzner, DigitalOcean...), avec :
-```bash
-npm install -g pm2
-pm2 start server.js --name maya-dispatch
-pm2 startup   # démarre automatiquement après un redémarrage du serveur
-```
-Puis un reverse proxy (nginx ou Caddy) devant, avec un certificat HTTPS gratuit (Let's Encrypt).
-
-### Variables d'environnement importantes en production
-- `SESSION_SECRET` : une longue chaîne aléatoire, différente de la valeur par défaut du code.
-- `NODE_ENV=production` : active le mode sécurisé des cookies (nécessite HTTPS).
-- `PORT` : le port d'écoute (défini automatiquement par la plupart des hébergeurs).
-
-**Important : le HTTPS est indispensable en production** — sans lui, les mots de passe circulent en clair sur le réseau.
-
-## 4. Sauvegardes
-
-Le fichier `maya.db` contient **toutes les données** de l'entreprise. Sauvegarde-le régulièrement :
-```bash
-cp maya.db sauvegardes/maya-$(date +%Y-%m-%d).db
-```
-Idéalement via une tâche automatique quotidienne (cron) qui copie ce fichier vers un espace de stockage externe (Google Drive, Dropbox, un autre serveur...).
-
-## 5. Structure du projet
+## 7. Structure du projet
 
 ```
 maya-app/
   server.js       → serveur Express : API, authentification, logique métier
-  db.js           → schéma de la base de données SQLite + données de départ
+  db.js           → connexion PostgreSQL (Supabase) + schéma + données de départ
   public/
-    index.html    → page HTML (charge le style et app.js)
+    index.html    → page HTML
     app.js        → interface (tableau de bord, saisie, statistiques...)
-    logo-b64.txt  → logo MAYA encodé
-  maya.db         → base de données (créée automatiquement au premier lancement)
+    logo-b64.txt   → logo MAYA encodé
 ```
-
-## 6. Ce qui reste à décider avant le vrai lancement
-
-Se référer au **cahier des charges** (section "Limites connues et scénarios à risque") pour la liste complète des points à trancher avec le client : gestion des litiges clients, changement de statut d'un livreur en cours de mois, récupération du mot de passe du Boss, etc.
