@@ -130,6 +130,9 @@ async function init() {
     );
   `);
 
+  // Migration douce : ajoute la colonne livreur_id si elle n'existe pas encore (déploiements déjà en place)
+  await pool.query('ALTER TABLE ventes_depot ADD COLUMN IF NOT EXISTS livreur_id TEXT');
+
   const { rows } = await pool.query('SELECT COUNT(*)::int AS c FROM agences');
   if (rows[0].c === 0) {
     await pool.query('INSERT INTO agences (id, nom) VALUES ($1,$2), ($3,$4)', ['coto', 'Cotonou', 'pn', 'Porto-Novo']);

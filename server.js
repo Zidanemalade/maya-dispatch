@@ -197,7 +197,7 @@ app.get('/api/state', requireAuth, ah(async (req, res) => {
   const ventesDepot = ventesDepotRaw.map(v => ({
     id: v.id, produitId: v.produit_id, clientId: v.client_id, agenceId: v.agence_id, quantite: v.quantite,
     prixVendu: v.prix_vendu, fraisLivraison: v.frais_livraison, net: v.net, destinataire: v.destinataire,
-    contactDest: v.contact_dest, lieu: v.lieu, heure: v.heure, date: v.date, secretaireId: v.secretaire_id, createdAt: Number(v.created_at)
+    contactDest: v.contact_dest, lieu: v.lieu, heure: v.heure, date: v.date, secretaireId: v.secretaire_id, createdAt: Number(v.created_at), livreurId: v.livreur_id
   }));
 
   res.json({ agences, secretaires, livreurs, livraisons, depenses, essence, prixEssence, audit, clientsDepot, produitsDepot, ventesDepot, todayISO: todayISO(), currentMoisKey: currentMoisKey() });
@@ -402,7 +402,7 @@ app.post('/api/depot/produits/:id/restock', requireAuth, ah(async (req, res) => 
 
 app.post('/api/depot/ventes', requireAuth, ah(async (req, res) => {
   const user = req.session.user;
-  const { produitId, quantite, prixVendu, fraisLivraison, destinataire, contactDest, lieu, heure } = req.body;
+  const { produitId, quantite, prixVendu, fraisLivraison, destinataire, contactDest, lieu, heure, livreurId } = req.body;
   const { rows } = await pool.query('SELECT * FROM produits_depot WHERE id = $1', [produitId]);
   const p = rows[0];
   if (!p) return res.status(404).json({ error: 'Produit introuvable' });
@@ -415,9 +415,9 @@ app.post('/api/depot/ventes', requireAuth, ah(async (req, res) => {
   const id = uid();
 
   await pool.query(
-    `INSERT INTO ventes_depot (id, produit_id, client_id, agence_id, quantite, prix_vendu, frais_livraison, net, destinataire, contact_dest, lieu, heure, date, secretaire_id, created_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
-    [id, produitId, p.client_id, p.agence_id, qte, prix, frais, net, destinataire || null, contactDest || null, lieu || null, heure || null, todayISO(), user.type === 'boss' ? null : user.id, Date.now()]
+    `INSERT INTO ventes_depot (id, produit_id, client_id, agence_id, quantite, prix_vendu, frais_livraison, net, destinataire, contact_dest, lieu, heure, date, secretaire_id, created_at, livreur_id)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
+    [id, produitId, p.client_id, p.agence_id, qte, prix, frais, net, destinataire || null, contactDest || null, lieu || null, heure || null, todayISO(), user.type === 'boss' ? null : user.id, Date.now(), livreurId || null]
   );
   const nouvelleQuantite = p.quantite - qte;
   await pool.query('UPDATE produits_depot SET quantite = $1 WHERE id = $2', [nouvelleQuantite, p.id]);
