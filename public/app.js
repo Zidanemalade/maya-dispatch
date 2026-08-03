@@ -849,9 +849,11 @@
     const totalNet = list.reduce((s,v)=>s+v.net,0);
     const rows = list.map(v=>{
       const p = data.produitsDepot.find(x=>x.id===v.produitId) || {};
-      return `<tr><td class="d3-mono">${v.date}</td><td>${esc(p.nom||'—')}</td><td class="d3-mono">${v.quantite}</td><td class="d3-mono">${fmt(v.prixVendu)} F</td><td class="d3-mono">${fmt(v.fraisLivraison)} F</td><td class="d3-mono">${fmt(v.net)} F</td></tr>`;
+      return `<tr><td class="d3-mono">${v.date}</td><td class="d3-mono">${esc(v.heure||'—')}</td><td>${esc(p.nom||'—')}</td><td class="d3-mono">${v.quantite}</td><td class="d3-mono">${fmt(v.prixVendu)} F</td><td class="d3-mono">${fmt(v.fraisLivraison)} F</td><td class="d3-mono">${fmt(v.net)} F</td></tr>`;
     }).join('');
     const clientNom = (clientDepotById(selectedId)||{}).nom||'';
+    const stockClient = data.produitsDepot.filter(p=>p.clientId===selectedId);
+    const stockRows = stockClient.map(p=>`<tr><td>${esc(p.nom)}</td><td>${esc(p.reference||'—')}</td><td class="d3-mono" style="${p.quantite<=0?'color:var(--coral);':''}">${p.quantite}</td></tr>`).join('');
 
     return `
       <div class="d3-panel">
@@ -866,7 +868,7 @@
         <h3>Facture — ${esc(clientNom)} · ${periodeLabel}</h3>
         ${list.length ? `
         <table class="d3-table">
-          <thead><tr><th>Date</th><th>Produit</th><th>Qté</th><th>Prix vendu</th><th>Frais livraison</th><th>Net dû au client</th></tr></thead>
+          <thead><tr><th>Date</th><th>Heure</th><th>Produit</th><th>Qté</th><th>Prix vendu</th><th>Frais livraison</th><th>Net dû au client</th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
         <table class="d3-table" style="margin-top:10px; max-width:400px;">
@@ -878,17 +880,24 @@
         </table>
         <button class="d3-btn d3-btn-ghost" id="btn-print-facture" style="margin-top:12px;">Imprimer / Exporter en PDF</button>
         ` : '<div class="d3-empty">Aucune vente pour ce client sur cette période.</div>'}
+        <h3 style="margin-top:24px;">Stock restant chez MAYA (à ce jour)</h3>
+        ${stockClient.length ? `
+        <table class="d3-table">
+          <thead><tr><th>Produit</th><th>Référence</th><th>Stock restant</th></tr></thead>
+          <tbody>${stockRows}</tbody>
+        </table>` : '<div class="d3-empty">Aucun produit enregistré pour ce client.</div>'}
       </div>
     `;
   }
 
-  function printFacture(clientNom, periodeLabel, rowsHtml, totalVendu, totalFrais, totalNet){
+  function printFacture(clientNom, periodeLabel, rowsHtml, totalVendu, totalFrais, totalNet, stockRowsHtml){
     const w = window.open('', '_blank');
     if (!w) { alert('Le navigateur a bloqué l’ouverture de la fenêtre d’impression — autorise les pop-ups pour ce site.'); return; }
     w.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Facture ${esc(clientNom)}</title>
       <style>
         body{font-family:Arial,sans-serif; padding:30px; color:#111;}
         h1{font-size:20px; margin-bottom:2px;} h2{font-size:15px; color:#555; font-weight:normal; margin-top:0;}
+        h3{font-size:14px; margin-top:28px;}
         table{width:100%; border-collapse:collapse; margin-top:16px;}
         th,td{border:1px solid #ccc; padding:6px 10px; text-align:left; font-size:13px;}
         th{background:#f2f2f2;}
@@ -897,12 +906,14 @@
       </style></head><body>
         <h1>MAYA Delivery Service</h1>
         <h2>Facture — ${esc(clientNom)} · ${esc(periodeLabel)}</h2>
-        <table><thead><tr><th>Date</th><th>Produit</th><th>Qté</th><th>Prix vendu</th><th>Frais livraison</th><th>Net</th></tr></thead><tbody>${rowsHtml}</tbody></table>
+        <table><thead><tr><th>Date</th><th>Heure</th><th>Produit</th><th>Qté</th><th>Prix vendu</th><th>Frais livraison</th><th>Net</th></tr></thead><tbody>${rowsHtml}</tbody></table>
         <table class="totaux">
           <tr><td>Total vendu</td><td>${fmt(totalVendu)} F</td></tr>
           <tr><td>Frais de livraison</td><td>− ${fmt(totalFrais)} F</td></tr>
           <tr><td><strong>Net dû au client</strong></td><td><strong>${fmt(totalNet)} F</strong></td></tr>
         </table>
+        <h3>Stock restant chez MAYA (à ce jour)</h3>
+        <table><thead><tr><th>Produit</th><th>Référence</th><th>Stock restant</th></tr></thead><tbody>${stockRowsHtml || ''}</tbody></table>
       </body></html>`);
     w.document.close();
     w.focus();
@@ -1078,9 +1089,11 @@
       const totalNet = list.reduce((s,v)=>s+v.net,0);
       const rowsHtml = list.map(v=>{
         const p = data.produitsDepot.find(x=>x.id===v.produitId) || {};
-        return `<tr><td>${v.date}</td><td>${esc(p.nom||'—')}</td><td>${v.quantite}</td><td>${fmt(v.prixVendu)} F</td><td>${fmt(v.fraisLivraison)} F</td><td>${fmt(v.net)} F</td></tr>`;
+        return `<tr><td>${v.date}</td><td>${esc(v.heure||'—')}</td><td>${esc(p.nom||'—')}</td><td>${v.quantite}</td><td>${fmt(v.prixVendu)} F</td><td>${fmt(v.fraisLivraison)} F</td><td>${fmt(v.net)} F</td></tr>`;
       }).join('');
-      printFacture(clientNom, periodeLabel, rowsHtml, totalVendu, totalFrais, totalNet);
+      const stockClient = data.produitsDepot.filter(p=>p.clientId===selectedId);
+      const stockRowsHtml = stockClient.map(p=>`<tr><td>${esc(p.nom)}</td><td>${esc(p.reference||'—')}</td><td>${p.quantite}</td></tr>`).join('');
+      printFacture(clientNom, periodeLabel, rowsHtml, totalVendu, totalFrais, totalNet, stockRowsHtml);
     });
 
     if (user && user.type==='boss') startPoll(); else stopPoll();
